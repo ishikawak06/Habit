@@ -1,0 +1,223 @@
+// =========================================================================
+// GOOGLE APPS SCRIPT - HABITFLOW PREMIUM TRACKER BACKEND
+// =========================================================================
+// Cara Install:
+// 1. Buka https://script.google.com/ dan buat Project Baru.
+// 2. Hapus semua kode bawaan, lalu paste kode ini.
+// 3. Klik tombol "Deploy" (Terapkan) > "New deployment" (Penerapan baru).
+// 4. Pilih tipe "Web app" (Aplikasi web).
+// 5. Execute as: "Me" (Diri Anda).
+// 6. Who has access: "Anyone" (Siapa saja).
+// 7. Klik Deploy, berikan otorisasi akses ke Google Account Anda.
+// 8. Copy "Web app URL" dan paste di menu "Backup & Sync" di HabitFlow.
+// =========================================================================
+
+function doPost(e) {
+  try {
+    var data = JSON.parse(e.postData.contents);
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    
+    if (data.action === 'sync') {
+      if (data.habits) syncHabits(ss, data.habits);
+      if (data.logs) syncLogs(ss, data.logs);
+      if (data.xp !== undefined) syncXP(ss, data.xp);
+      
+      return ContentService.createTextOutput(
+        JSON.stringify({success: true, timestamp: new Date()})
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+    
+    return ContentService.createTextOutput(JSON.stringify({success: false, error: 'Unknown action'})).setMimeType(ContentService.MimeType.JSON);
+  } catch (error) {
+    return ContentService.createTextOutput(JSON.stringify({success: false, error: error.message})).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function doGet(e) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var habits = getHabitsData(ss);
+    var logs = getLogsData(ss);
+    // Fetch XP from sheet if exists, otherwise default to 0
+    var xpSheet = ss.getSheetByName('Settings');
+    var xp = 0;
+    if (xpSheet) {
+      var xpData = xpSheet.getRange("A2:B2").getValues();
+      if(xpData.length > 0 && xpData[0][0] === 'XP') {
+        xp = parseInt(xpData[0][1]) || 0;
+      }
+    }
+    
+    return ContentService.createTextOutput(
+      JSON.stringify({habits: habits, logs: logs, xp: xp, timestamp: new Date()})
+    ).setMimeType(ContentService.MimeType.JSON);
+  } catch (error) {
+    return ContentService.createTextOutput(JSON.stringify({error: error.message})).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+// -------------------------------------------------------------
+// SINKRONISASI HABITS
+// -------------------------------------------------------------
+function syncHabits(ss, habits) {
+  var sheetName = 'Habits';
+  var sheet = ss.getSheetByName(sheetName);
+  
+  if (!sheet) {
+    sheet = ss.insertSheet(sheetName);
+    // Header lengkap sesuai atribut habit
+    sheet.appendRow(['ID', 'Name', 'Category', 'Color', 'Icon', 'Frequency', 'Priority', 'Notes', 'WeekDays', 'Benefits', 'CreatedAt']);
+    sheet.getRange("A1:K1").setFontWeight("bold").setBackground("#f3f4f6");
+    sheet.setFrozenRows(1);
+  }
+  
+  // Bersihkan data lama, sisakan header
+  if (sheet.getLastRow() > 1) {
+    sheet.getRange(2, 1, sheet.getLastRow() - 1, 11).clearContent();
+  }
+  
+  if (habits.length === 0) return;
+  
+  // Susun data untuk dimasukkan sekaligus (lebih cepat)
+  var rows = habits.map(function(h) {
+    return [
+      h.id || '',
+      h.name || '',
+      h.category || '',
+      h.color || '',
+      h.icon || '',
+      h.frequency || '',
+      h.priority || '',
+      h.notes || '',
+      h.weekDays ? JSON.stringify(h.weekDays) : '[]',   // Array dijadikan String
+      h.benefits ? JSON.stringify(h.benefits) : '{}',   // Object dijadikan String
+      h.createdAt || ''
+    ];
+  });
+  
+  sheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
+}
+
+// -------------------------------------------------------------
+// SINKRONISASI LOGS
+// -------------------------------------------------------------
+function syncLogs(ss, logs) {
+  var sheetName = 'Logs';
+  var sheet = ss.getSheetByName(sheetName);
+  
+  if (!sheet) {
+    sheet = ss.insertSheet(sheetName);
+    sheet.appendRow(['HabitID', 'Date', 'Completed', 'Timestamp']);
+    sheet.getRange("A1:D1").setFontWeight("bold").setBackground("#f3f4f6");
+    sheet.setFrozenRows(1);
+  }
+  
+  if (sheet.getLastRow() > 1) {
+    sheet.getRange(2, 1, sheet.getLastRow() - 1, 4).clearContent();
+  }
+  
+  var keys = Object.keys(logs);
+  if (keys.length === 0) return;
+  
+  var rows = keys.map(function(key) {
+    var parts = key.split('_');
+    var id = parts[0];
+    var date = parts[1];
+    var val = logs[key];
+    return [id, date, val.completed, val.timestamp];
+  });
+  
+  sheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
+}
+
+// -------------------------------------------------------------
+// SINKRONISASI XP / SETTINGS
+// -------------------------------------------------------------
+function syncXP(ss, xp) {
+  var sheetName = 'Settings';
+  var sheet = ss.getSheetByName(sheetName);
+  
+  if (!sheet) {
+    sheet = ss.insertSheet(sheetName);
+    sheet.appendRow(['Key', 'Value', 'LastUpdated']);
+    sheet.getRange("A1:C1").setFontWeight("bold").setBackground("#f3f4f6");
+  }
+  
+  // Cek apakah key XP sudah ada
+  var data = sheet.getDataRange().getValues();
+  var xpRowIndex = -1;
+  for (var i = 0; i < data.length; i++) {
+    if (data[i][0] === 'XP') {
+      xpRowIndex = i + 1;
+      break;
+    }
+  }
+  
+  if (xpRowIndex > 0) {
+    sheet.getRange(xpRowIndex, 2, 1, 2).setValues([[xp, new Date().toISOString()]]);
+  } else {
+    sheet.appendRow(['XP', xp, new Date().toISOString()]);
+  }
+}
+
+// -------------------------------------------------------------
+// MENGAMBIL DATA (GET)
+// -------------------------------------------------------------
+function getHabitsData(ss) {
+  var sheet = ss.getSheetByName('Habits');
+  if (!sheet) return [];
+  
+  var data = sheet.getDataRange().getValues();
+  if (data.length < 2) return [];
+  
+  var headers = data[0];
+  var habits = [];
+  
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    var obj = {};
+    for (var j = 0; j < headers.length; j++) {
+      var key = headers[j].charAt(0).toLowerCase() + headers[j].slice(1); // 'Name' -> 'name'
+      var val = row[j];
+      
+      // Parse kembali JSON string menjadi Array/Object untuk weekDays dan benefits
+      if (key === 'weekDays' || key === 'benefits') {
+        try {
+          val = JSON.parse(val);
+        } catch(e) {
+          val = key === 'weekDays' ? [0,1,2,3,4,5,6] : {};
+        }
+      }
+      obj[key] = val;
+    }
+    // Handle specific uppercase IDs compatibility
+    if(obj.iD !== undefined) { obj.id = obj.iD; delete obj.iD; }
+    
+    habits.push(obj);
+  }
+  return habits;
+}
+
+function getLogsData(ss) {
+  var sheet = ss.getSheetByName('Logs');
+  if (!sheet) return {};
+  
+  var data = sheet.getDataRange().getValues();
+  if (data.length < 2) return {};
+  
+  var logs = {};
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    var habitId = row[0];
+    var date = row[1];
+    var completed = row[2];
+    var timestamp = row[3];
+    
+    var key = habitId + '_' + date;
+    logs[key] = {
+      completed: completed === true || completed === 'true',
+      timestamp: timestamp
+    };
+  }
+  return logs;
+}
